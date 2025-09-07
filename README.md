@@ -1,3 +1,9 @@
+# Text to Shader Agent 文生“图”的 shadertoy 智能体
+对于刚接触shadertoy的人，或者正在学习cg，正在尝试编写gl代码的人可以提供帮助，不用与数学物理苦战，也能写出炫酷的代码。
+![text2shader agent对话界面](docs/agent_screenshot.png)
+以下是text2shader agent生成的shadetoy代码的编译效果
+![效果图](docs/shadertoy.png)
+
 # NVIDIA NeMo Agent Toolkit AI对话机器人
 
 > 🏆 **黑客松项目** - 基于NVIDIA官方NeMo Agent Toolkit构建的智能对话机器人，展示AI Agent的强大功能
