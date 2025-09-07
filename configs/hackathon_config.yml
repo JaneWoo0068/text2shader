@@ -1,27 +1,244 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# NVIDIA NeMo Agent Toolkit 黑客松配置
-# 支持用户自定义OpenAI兼容API
-
 general:
   use_uvloop: true
 
 functions:
-  internet_search:
+  code_generation:
+    _type: code_generation
+    llm_name: default_llm
+    description: "结构化需求和GLSL shader生成，一体化代码生成工具"
+    prompt_template: |
+      你是一名Shadertoy平台GLSL片元着色器创作专家，严格遵循Shadertoy官方文档（https://www.shadertoy.com/howto）和Shadertoy社区优秀作品风格创作代码。分两步完成任务：
+
+      步骤一（clarify）：
+      - 根据用户描述，转化为结构化shader需求，输出标准JSON对象，字段包括：scene_type、primary_colors、is_dynamic、is_interactive、special_effects、reference_style、need_texture、texture_type。
+      - 用户描述如下：{user_input}
+      - 只输出JSON对象，不要输出其他内容。
+
+      步骤二（generate）：
+      - 根据clarified需求和{references}，生成**完全兼容Shadertoy的GLSL片元着色器代码**，要求如下：
+        1. 入口函数必须为`void mainImage(out vec4 fragColor, in vec2 fragCoord)`，不能有`main()`或其他入口函数。
+        2. 只允许用Shadertoy官方内置uniform和变量，如`iTime`, `iResolution`, `iMouse`, `iChannel0-3`等。
+        3. 只能通过fragCoord参数获取像素坐标，不能用gl_FragCoord。
+        4. 只能通过fragColor参数输出像素颜色，不能用gl_FragColor。
+        5. 严禁自定义u_time、u_resolution等uniform，也不要声明main()函数。
+        6. 只允许用GLSL标准和Shadertoy官方文档支持的函数。禁止用如`cross(vec2,vec2)`等Shadertoy不支持的用法（cross只能用于vec3）。
+        7. 必须纯GLSL实现，不能用C++、HLSL等语法。
+        8. 禁止使用任何贴图、texture、iChannel0、iChannel1、iChannel2、iChannel3、sampler2D等纹理相关内容，只能用数学公式、循环、基础图元等procedural技巧实现。否则视为不合格。
+        9. 如需用到外部纹理（need_texture为true），请根据texture_type说明合理用iChannel0~3，并注释用途，否则禁止引用iChannel0~3，所有内容必须纯procedural实现。
+        10. 代码需有详细中文注释，便于理解和调试。
+        11. 充分借鉴参考资料风格和技巧，但不得抄袭原代码。
+        12. 所有涉及int和float的混合运算，必须先用float(...)显式类型转换，不能直接把int变量传递给sin()、cos()、*、/等只接受float类型的函数或表达式。
+        13. 生成的代码应尽量简洁、精炼，避免无用的冗长结构和变量。优先采用数学变换、实例变换、线段/圆形基础图元组合等方式实现空间和运动感。
+        14. 推荐参考如下完全 procedural 的示例风格（可参考但请勿逐字抄袭变量名和注释，保持原创）：
+
+        ```glsl
+        #define LINEAR_ROTATION
+
+        #define WEIGHT (3.0 / iResolution.x)
+        const vec3 RED = vec3(1.0,0.0,0.0);
+        const vec3 GREEN = vec3(0.0,1.0,0.0);
+        const vec3 BLUE = vec3(0.0,0.8,1.0);
+        const vec3 WHITE = vec3(1.0,1.0,0.97);
+        const vec3 YELLOW = vec3(1.0,1.0,0.0);
+
+        // rasterize functions
+        float line(vec2 p, vec2 p0, vec2 p1, float w) {
+            vec2 d = p1 - p0;
+            float t = clamp(dot(d,p-p0) / dot(d,d), 0.0,1.0);
+            vec2 proj = p0 + d * t;
+            float dist = length(p - proj);
+            dist = 1.0/dist*WEIGHT*w;
+            return min(dist*dist,1.0);
+        }
+        float circle(vec2 p, vec2 c, float r, float w) {
+            float dist = abs(length(p - c)) + r;
+            dist = 1.0/dist*WEIGHT*w;
+            return min(dist*dist,1.0);
+        }
+
+        // matrices
+        mat4 getRotMatrix(vec3 a) {
+            vec3 s = sin(a);
+            vec3 c = cos(a);    
+            mat4 ret;
+            ret[0] = vec4(c.y*c.z,c.y*s.z,-s.y,0.0);
+            ret[1] = vec4(s.x*s.y*c.z-c.x*s.z,s.x*s.y*s.z+c.x*c.z,s.x*c.y,0.0);
+            ret[2] = vec4(c.x*s.y*c.z+s.x*s.z, c.x*s.y*s.z-s.x*c.z,   c.x*c.y,0.0);    
+            ret[3] = vec4(0.0,0.0,0.0,1.0);
+            return ret;
+        }
+        mat4 getPosMatrix(vec3 p) {   
+            mat4 ret;
+            ret[0] = vec4(1.0,0.0,0.0,p.x);
+            ret[1] = vec4(0.0,1.0,0.0,p.y);
+            ret[2] = vec4(0.0,0.0,1.0,p.z);   
+            ret[3] = vec4(0.0,0.0,0.0,1.0);
+            return ret;
+        }
+
+        // utils
+        vec3 mix3(vec3 a, vec3 b, vec3 c, float t) {
+            if(t>0.5) return mix(b,c,t*2.0-1.0);
+            else return mix(a,b,t*2.0);
+        }
+        vec3 fragment(vec3 p) {
+            float t = sin(p.x*0.8+iTime*0.5)*0.5+0.5;
+            float fog = min(pow(p.z,3.0)*400.0,1.0);
+            return mix3(RED,GREEN,BLUE,t) * fog;
+        }    
+
+        void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
+            vec2 uv = fragCoord.xy / iResolution.xy;
+            uv = uv * 2.0 - 1.0;
+            uv.x *= iResolution.x / iResolution.y;
+
+            float line_width = 0.4;
+            float time = iTime * 0.31415;
+            vec3 c = vec3(mix(vec3(0.19,0.13,0.1),vec3(1.0), 0.5*pow(length(uv)*0.5,2.0)));
+            mat4 cam = getPosMatrix(vec3(0.0,0.0,10.0));
+
+        #ifdef LINEAR_ROTATION
+            mat4 rot = getRotMatrix(vec3(time,time*0.86,time*0.473));
+        #else
+            float p = 0.08;
+            mat4 rot = getRotMatrix(vec3(time		+sin(time*30.0)*p,
+                                         time*0.860	+sin(time*20.0)*p*1.24,
+                                         time*0.473	+sin(time*10.0)*p));
+        #endif
+
+            vec3 instances[18];
+            instances[0] = vec3( 0.0, 0.0,-1.0);
+            instances[1] = vec3(-1.0, 0.0,-1.0);
+            instances[2] = vec3( 1.0, 0.0,-1.0);
+            instances[3] = vec3( 0.0, 1.0,-1.0);
+            instances[4] = vec3( 0.0,-1.0,-1.0);    
+            instances[5] = vec3(-1.0, 0.0, 0.0);
+            instances[6] = vec3( 1.0, 0.0, 0.0);
+            instances[7] = vec3( 0.0, 1.0, 0.0);
+            instances[8] = vec3( 0.0,-1.0, 0.0);        
+            instances[9] = vec3(-1.0,-1.0, 0.0);
+            instances[10] = vec3( 1.0, 1.0, 0.0);
+            instances[11] = vec3(-1.0, 1.0, 0.0);
+            instances[12] = vec3( 1.0,-1.0, 0.0);    
+            instances[13] = vec3( 0.0, 0.0, 1.0);
+            instances[14] = vec3(-1.0, 0.0, 1.0);
+            instances[15] = vec3( 1.0, 0.0, 1.0);
+            instances[16] = vec3( 0.0, 1.0, 1.0);
+            instances[17] = vec3( 0.0,-1.0, 1.0);
+
+            // box pipeline
+            for(int dip = 0; dip < 18; dip++) {
+                // input assembly
+                vec3 vert[8];
+                vert[0] = vec3(-1.0,-1.0, 1.0);
+                vert[1] = vec3(-1.0, 1.0, 1.0);    
+                vert[2] = vec3( 1.0, 1.0, 1.0);    
+                vert[3] = vec3( 1.0,-1.0, 1.0);
+                vert[4] = vec3(-1.0,-1.0,-1.0);
+                vert[5] = vec3(-1.0, 1.0,-1.0);    
+                vert[6] = vec3( 1.0, 1.0,-1.0);    
+                vert[7] = vec3( 1.0,-1.0,-1.0);
+
+                // vertex processing        
+                mat4 pos = getPosMatrix(instances[dip] * 4.0);
+                mat4 mat = pos * rot * cam;
+
+                for(int i = 0; i < 8; i++) {
+                    // transform
+                    vert[i] = (vec4(vert[i],1.0) * mat).xyz;
+
+                    // perspective
+                    vert[i].z = 1.0 / vert[i].z;
+                    vert[i].xy *= vert[i].z;
+                }    
+
+                // primitive assembly and rasterize
+                float i;
+                i  = line(uv,vert[0].xy,vert[1].xy,line_width);
+                i += line(uv,vert[1].xy,vert[2].xy,line_width);
+                i += line(uv,vert[2].xy,vert[3].xy,line_width);
+                i += line(uv,vert[3].xy,vert[0].xy,line_width);
+                i += line(uv,vert[4].xy,vert[5].xy,line_width);
+                i += line(uv,vert[5].xy,vert[6].xy,line_width);
+                i += line(uv,vert[6].xy,vert[7].xy,line_width);
+                i += line(uv,vert[7].xy,vert[4].xy,line_width);
+                i += line(uv,vert[0].xy,vert[4].xy,line_width);
+                i += line(uv,vert[1].xy,vert[5].xy,line_width);
+                i += line(uv,vert[2].xy,vert[6].xy,line_width);
+                i += line(uv,vert[3].xy,vert[7].xy,line_width);
+                c += fragment(vert[0]) * min(i,1.0);
+            }
+
+            instances[0] = vec3(-1.0, 1.0,-1.0);
+            instances[1] = vec3( 1.0, 1.0,-1.0);
+            instances[2] = vec3(-1.0,-1.0,-1.0);
+            instances[3] = vec3( 1.0,-1.0,-1.0);
+            instances[4] = vec3(-1.0, 1.0, 1.0);
+            instances[5] = vec3( 1.0, 1.0, 1.0);
+            instances[6] = vec3(-1.0,-1.0, 1.0);
+            instances[7] = vec3( 1.0,-1.0, 1.0);
+
+            // cicle pipeline
+            for(int dip = 0; dip < 8; dip++) {
+                // input assembly
+                vec3 vert = vec3(0.0);
+
+                // vertex processing
+                mat4 pos = getPosMatrix(instances[dip] * 4.0);
+                mat4 mat = pos * rot * cam;
+
+                // transform
+                vert = (vec4(vert,1.0) * mat).xyz;
+
+                // perspective
+                vert.z = 1.0 / vert.z;
+                vert.xy *= vert.z;
+
+                // rasterize
+                c += fragment(vert) * circle(uv,vert.xy,-vert.z,line_width);
+            }
+
+            // fragment
+            fragColor = vec4(c,1.0);
+        }
+        ```
+        15. 只输出完整GLSL代码块，不要输出任何额外解释或文本。
+
+      下面是典型错误和正确示例（务必避免错误写法）：
+      错误示例：
+      ```glsl
+      texture(iChannel0, ...)
+      gl_FragColor = ...
+      gl_FragCoord
+      cross(vec2, vec2)
+      uniform float u_time;
+      #define NUM_SNOWFLAKES 100
+      ```
+      正确示例：
+      ```glsl
+      float fi = float(i);
+      sin(fi * 13.789)
+      void mainImage(out vec4 fragColor, in vec2 fragCoord) {... fragColor = ...;}
+      ```
+
+      结构化需求（clarified）：
+      {clarified}
+
+      参考资料（如有）：
+      {references}
+
+  tavily_search:
     _type: tavily_internet_search
-    description: "使用Tavily API进行实时网络搜索"
-  
-  current_datetime:
-    _type: current_datetime
-    description: "获取当前日期和时间"
+    description: "只在Shadertoy官网检索GLSL片元着色器案例"
+    max_results: 5
 
 llms:
-  # 默认使用Bailian API (用户可修改)
   default_llm:
     _type: openai
     model_name: "qwen-plus"
-    api_key: "Your API Key"
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
     temperature: 0.7
     max_tokens: 2048
@@ -29,10 +246,28 @@ llms:
 workflow:
   _type: react_agent
   tool_names:
-    - internet_search
-    - current_datetime
+    - code_generation
+    - tavily_search
   llm_name: default_llm
   verbose: true
-  parse_agent_response_max_retries: 3
   max_iterations: 10
+  system_prompt: |
+    你是一位Shadertoy着色器专家和图形学助手。
+    你的主要流程如下：
+    1. 先用 code_generation 工具将用户需求澄清为结构化JSON（clarify步骤）。
+    2. 如有需要，调用 tavily_search 工具，限定 site:shadertoy.com，只检索Shadertoy上的优秀shader代码案例。
+    3. 最后用 code_generation 工具，结合clarified需求和references，生成GLSL shader代码。
 
+    工具调用格式要求：
+    Thought: 分析和推理
+    Action: 工具名
+    Action Input: JSON格式参数
+    Observation: 工具输出
+
+    结束时只允许输出**Final Answer:**
+    - Final Answer后只能有完整、可运行的Shadertoy glsl代码块（无其他文本或解释）
+    - 代码块必须严格闭合、前缀为glsl
+    - Output must not include any extra description, explanation, or unclosed code blocks; only the code.
+
+    工具列表：{tool_names}
+    可用工具详情：{tools}

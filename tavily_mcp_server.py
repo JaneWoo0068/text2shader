@@ -109,17 +109,52 @@ class TavilyMCPServer:
                 logger.error(f"Tool call failed: {e}")
                 return [TextContent(type="text", text=f"Error: {str(e)}")]
     
+    # async def _tavily_search(self, arguments: Dict[str, Any]) -> List[TextContent]:
+    #     """执行Tavily搜索"""
+    #     query = arguments.get("query", "")
+    #     max_results = arguments.get("max_results", 5)
+        
+    #     if not query:
+    #         return [TextContent(type="text", text="Error: Query is required")]
+        
+    #     try:
+    #         logger.info(f"Executing Tavily search: {query}")
+            
+    #         # 调用Tavily API
+    #         response = self.tavily_client.search(
+    #             query=query,
+    #             max_results=max_results,
+    #             search_depth="basic",
+    #             include_answer=True,
+    #             include_raw_content=False
+    #         )
+            
+    #         # 格式化结果
+    #         result = self._format_search_result(response, query)
+            
+    #         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+            
+    #     except Exception as e:
+    #         logger.error(f"Tavily search failed: {e}")
+    #         return [TextContent(type="text", text=f"Search failed: {str(e)}")]
+    
+    # 修复 Tavily 输出格式，配合工作流
     async def _tavily_search(self, arguments: Dict[str, Any]) -> List[TextContent]:
-        """执行Tavily搜索"""
+        """执行Tavily搜索，只在 Shadertoy 官网搜索"""
         query = arguments.get("query", "")
         max_results = arguments.get("max_results", 5)
-        
+
         if not query:
             return [TextContent(type="text", text="Error: Query is required")]
-        
+
+        # ---- 这里强制加限定 ----
+        if "site:shadertoy.com" not in query:
+            query = f"site:shadertoy.com {query}"
+        # --------------------
+
         try:
             logger.info(f"Executing Tavily search: {query}")
-            
+
             # 调用Tavily API
             response = self.tavily_client.search(
                 query=query,
@@ -128,12 +163,17 @@ class TavilyMCPServer:
                 include_answer=True,
                 include_raw_content=False
             )
-            
-            # 格式化结果
-            result = self._format_search_result(response, query)
-            
-            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
-            
+
+            # 直接将每个result变成TextContent
+            results = response.get("results", [])
+            text_contents = []
+            for result in results:
+                url = result.get("url", "")
+                title = result.get("title", "")
+                content = result.get("content", "")
+                text_contents.append(TextContent(type="text", text=f"{title}\n{content}\n{url}"))
+            return text_contents
+
         except Exception as e:
             logger.error(f"Tavily search failed: {e}")
             return [TextContent(type="text", text=f"Search failed: {str(e)}")]
